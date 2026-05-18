@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'duluca'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t local-test:${{ github.sha }} .
+
+      - name: Smoke test - container starts and stays up
+        run: |
+          docker run -d --name testc -p 8080:80 local-test:${{ github.sha }}
+          sleep 5
+          docker ps --filter "name=testc" --filter "status=running" --format '{{.Names}}' | grep -q testc \
+            || (echo "container exited"; docker logs testc; exit 1)
+
+      - name: Endpoint check
+        run: |
+          for i in 1 2 3 4 5; do
+            if curl -fsS http://localhost:8080/ -o /tmp/body; then break; fi
+            sleep 2
+          done
+          grep -qi "Angular Evergreen" /tmp/body || (echo "expected content missing:"; cat /tmp/body; exit 1)
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f testc 2>/dev/null || true
+
+      - name: Auto-merge PR
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.AUTOMERGE_PAT }}
+        run: gh pr merge ${{ github.event.pull_request.number }} --squash --delete-branch -R ${{ github.repository }}
